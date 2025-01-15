@@ -120,6 +120,10 @@ TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING = {
     "qwen2": ["q_proj", "v_proj"],
 }
 
+TRANSFORMERS_MODELS_TO_MMOELORA_TARGET_MODULES_MAPPING = (
+    TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING
+)
+
 TRANSFORMERS_MODELS_TO_IA3_TARGET_MODULES_MAPPING = {
     "t5": ["k", "v", "wo"],
     "mt5": ["k", "v", "wi_1"],
@@ -301,6 +305,7 @@ PEFT_TYPE_TO_PREFIX_MAPPING = {
     PeftType.HRA: "hra_",
     PeftType.VBLORA: "vblora_",
     PeftType.BONE: "bone_",
+    PeftType.MMOELORA: "lora_",
 }
 
 WEIGHTS_NAME = "adapter_model.bin"
