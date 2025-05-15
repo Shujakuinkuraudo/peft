@@ -1051,6 +1051,7 @@ def _maybe_include_all_linear_layers(peft_config: PeftConfig, model: nn.Module) 
         # match with all linear classes.
         if isinstance(module, linear_classes):
             names = name.rsplit(".", 1)[-1]  # get the base name
+            print(names)
             linear_module_names.add(names)
 
     # Try to remove linear layers that should not be targeted as best as possible. We have to rely on convention as
