@@ -125,7 +125,7 @@ def main():
     )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    target_max_length = max([len(tokenizer(class_label)["input_ids"]) for class_label in classes])
+    target_max_length = max(len(tokenizer(class_label)["input_ids"]) for class_label in classes)
 
     def preprocess_function(examples):
         inputs = examples[text_column]
@@ -247,9 +247,9 @@ def main():
 
         correct = 0
         total = 0
-        assert len(eval_preds) == len(
-            dataset["train"][label_column]
-        ), f"{len(eval_preds)} != {len(dataset['train'][label_column])}"
+        assert len(eval_preds) == len(dataset["train"][label_column]), (
+            f"{len(eval_preds)} != {len(dataset['train'][label_column])}"
+        )
         for pred, true in zip(eval_preds, dataset["train"][label_column]):
             if pred.strip() == true.strip():
                 correct += 1
