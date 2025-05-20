@@ -22,6 +22,7 @@ class MMOELoraModel(LoraModel):
     """
     Create MMOELoRA (MMOE based LoRA) model from a pretrained transformers model.
     """
+    prefix: str = "mmoelora_"
 
     def __init__(self, model, config, adapter_name, **kwargs):
         super().__init__(model, config, adapter_name, **kwargs)

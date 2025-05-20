@@ -18,61 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from peft.tuners.xlora.model import XLoraModel
-
-from .config import PeftConfig
-from .mixed_model import PeftMixedModel
-from .peft_model import (
-    PeftModel,
-    PeftModelForCausalLM,
-    PeftModelForFeatureExtraction,
-    PeftModelForQuestionAnswering,
-    PeftModelForSeq2SeqLM,
-    PeftModelForSequenceClassification,
-    PeftModelForTokenClassification,
-)
-from .tuners import (
-    AdaLoraConfig,
-    AdaLoraModel,
-    AdaptionPromptConfig,
-    BOFTConfig,
-    BOFTModel,
-    BoneConfig,
-    BoneModel,
-    CPTConfig,
-    CPTEmbedding,
-    FourierFTConfig,
-    FourierFTModel,
-    HRAConfig,
-    HRAModel,
-    IA3Config,
-    IA3Model,
-    LNTuningConfig,
-    LNTuningModel,
-    LoHaConfig,
-    LoHaModel,
-    LoKrConfig,
-    LoKrModel,
-    LoraConfig,
-    LoraModel,
-    MultitaskPromptTuningConfig,
-    OFTConfig,
-    OFTModel,
-    PolyConfig,
-    PolyModel,
-    PrefixTuningConfig,
-    PromptEncoderConfig,
-    PromptTuningConfig,
-    VBLoRAConfig,
-    VBLoRAModel,
-    VeraConfig,
-    VeraModel,
-    XLoraConfig,
-    MMOELoraConfig,
-    MMOELoraModel,
-)
-from .tuners.tuners_utils import BaseTuner
-from .utils import _prepare_prompt_learning_config
 from .utils import PeftType
 
 
@@ -81,14 +26,6 @@ if TYPE_CHECKING:
     from .tuners.tuners_utils import BaseTuner
 
 
-MODEL_TYPE_TO_PEFT_MODEL_MAPPING: dict[str, type[PeftModel]] = {
-    "SEQ_CLS": PeftModelForSequenceClassification,
-    "SEQ_2_SEQ_LM": PeftModelForSeq2SeqLM,
-    "CAUSAL_LM": PeftModelForCausalLM,
-    "TOKEN_CLS": PeftModelForTokenClassification,
-    "QUESTION_ANS": PeftModelForQuestionAnswering,
-    "FEATURE_EXTRACTION": PeftModelForFeatureExtraction,
-}
 
 # these will be filled by the register_peft_method function
 PEFT_TYPE_TO_CONFIG_MAPPING: dict[PeftType, type[PeftConfig]] = {}
