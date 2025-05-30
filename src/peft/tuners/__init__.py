@@ -47,6 +47,7 @@ from .bone import BoneConfig, BoneModel
 from .mmoelora import MMOELoraConfig, MMOELoraModel
 from .vera import VeraConfig, VeraModel
 from .xlora import XLoraConfig, XLoraModel
+from .moelora import MOELoraConfig, MOELoraModel
 
 
 __all__ = [
@@ -107,4 +108,6 @@ __all__ = [
     "initialize_lora_eva_weights",
     "MMOELoraConfig",
     "MMOELoraModel",
+    "MOELoraConfig",
+    "MOELoraModel",
 ]

@@ -67,6 +67,7 @@ class PeftType(str, enum.Enum):
     MMOELORA = "MMOELORA"
     RANDLORA = "RANDLORA"
     TRAINABLE_TOKENS = "TRAINABLE_TOKENS"
+    MOELORA = "MOELORA"
 
 
 class TaskType(str, enum.Enum):
