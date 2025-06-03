@@ -19,12 +19,12 @@ def is_bnb_available():
     return importlib.util.find_spec("bitsandbytes") is not None
 
 
-class MOELoraModel(LoraModel):
+class HiDeLLaVALoraModel(LoraModel):
     """
-    Create MMOELoRA (MMOE based LoRA) model from a pretrained transformers model.
+    Create HiDeLLaVA (HiDeLLaVA based LoRA) model from a pretrained transformers model.
     """
 
-    prefix: str = "lora_"
+    prefix: str = "hidellava_"
 
     def __init__(self, model, config, adapter_name, **kwargs):
         super().__init__(model, config, adapter_name, **kwargs)

@@ -7,10 +7,10 @@ from torch import nn
 from peft.tuners.lora import LoraLayer
 from peft.tuners.tuners_utils import BaseTunerLayer
 
-from .config import MOELoraConfig
+from .config import HiDeLLaVALoraConfig
 
 
-class MOELoraLayer(LoraLayer):
+class HiDeLLaVALoraLayer(LoraLayer):
 
     def __init__(
         self,
@@ -20,7 +20,6 @@ class MOELoraLayer(LoraLayer):
         super().__init__(base_layer=base_layer)
 
         self.expert_num = expert_num
-        self.lora_gate = nn.ModuleDict({})
 
     def update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights, **kwargs):
         self.r[adapter_name] = r
@@ -38,7 +37,6 @@ class MOELoraLayer(LoraLayer):
             self.scaling[adapter_name] = lora_alpha / r
         if init_lora_weights:
             self.reset_lora_parameters(adapter_name)
-        self.lora_gate.update({adapter_name: Gate(self.in_features, self.expert_num)})
 
         self._move_adapter_to_device_of_base_layer(adapter_name)
 
@@ -75,6 +73,8 @@ class MOELoraLinear(nn.Module, MOELoraLayer):
 
         # init the Gate network
         # self.lora_task_embedding = nn.ModuleDict({})
+        self.lora_gate = nn.ModuleDict({})
+        self.lora_gate.update({adapter_name: Gate(self.in_features, self.expert_num)})
         # self.lora_task_embedding.update(nn.ModuleDict({adapter_name: nn.Embedding(self.task_num + 1, self.te_dim)}))
 
         # Freezing the pre-trained weight matrix
@@ -107,19 +107,17 @@ class MOELoraLinear(nn.Module, MOELoraLayer):
             for active_adapter in self.active_adapters:
                 if active_adapter not in self.lora_A.keys():
                     continue
-                scaling = self.scaling[active_adapter]
-                lora_B = self.lora_B[active_adapter]
-                lora_A = self.lora_A[active_adapter]
-                dropout = self.lora_dropout[active_adapter]
-                lora_gate = self.lora_gate[active_adapter]
 
-                x = self._cast_input_dtype(x, lora_A.loraA[0].mlp.weight.dtype)
-
-                expert_weight = lora_gate(x)
+                x = x.to(self.lora_A[active_adapter].loraA[0].mlp.weight.dtype)
+                expert_weight = self.lora_gate[active_adapter](x)
 
                 for i in range(self.expert_num):
                     result += (
-                        scaling * lora_B.loraB[i](lora_A.loraA[i](dropout(x))) * expert_weight[..., i].unsqueeze(-1)
+                        self.scaling[active_adapter]
+                        * self.lora_B[active_adapter].loraB[i](
+                            self.lora_A[active_adapter].loraA[i](self.lora_dropout[active_adapter](x))
+                        )
+                        * expert_weight[..., i].unsqueeze(-1)
                     )
             result = result.to(torch_result_dtype)
 
@@ -209,12 +207,8 @@ class Gate(nn.Module):
 
     def forward(self, x):
 
-        original_dtype = x.dtype
-
-        x = x.to(self.GateL.weight.dtype)  # Ensure input is in the same dtype as GateL
         y = self.GateL(x)
         y = self.act(y)
-        y = y.to(original_dtype)
 
         return y
 
@@ -222,7 +216,7 @@ class Gate(nn.Module):
 def dispatch_default(
     target: torch.nn.Module,
     adapter_name: str,
-    lora_config: MOELoraConfig,
+    lora_config: HiDeLLaVALoraConfig,
     **kwargs,
 ) -> Optional[torch.nn.Module]:
     new_module = None
