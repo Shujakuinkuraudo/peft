@@ -7,10 +7,10 @@ from torch import nn
 from peft.tuners.lora import LoraLayer
 from peft.tuners.tuners_utils import BaseTunerLayer
 
-from .config import MOELoraConfig
+from .config import DMOLEConfig
 
 
-class MOELoraLayer(LoraLayer):
+class DMOLELayer(LoraLayer):
 
     def __init__(
         self,
@@ -48,12 +48,11 @@ class MOELoraLayer(LoraLayer):
         if adapter_name in self.lora_A.keys():
             # initialize A the same way as the default for nn.Linear and B to zero
             for i in range(self.expert_num):
-                # nn.init.normal_(self.lora_A[adapter_name].loraA[i].mlp.weight, mean=0.0, std=0.01)
-                nn.init.kaiming_uniform_(self.lora_A[adapter_name].loraA[i].mlp.weight, a=5**0.5)
+                nn.init.normal_(self.lora_A[adapter_name].loraA[i].mlp.weight, mean=0.0, std=0.01)
                 nn.init.zeros_(self.lora_B[adapter_name].loraB[i].mlp.weight)
 
 
-class MOELoraLinear(nn.Module, MOELoraLayer):
+class DMOLELinear(nn.Module, DMOLELayer):
     # Lora implemented in a dense layer
     # nn.Linear is the pretrained weights in LLM, MMOELoraLayer is the designed trainable Lora
     def __init__(
@@ -67,7 +66,7 @@ class MOELoraLinear(nn.Module, MOELoraLayer):
         **kwargs,
     ):
         super().__init__()
-        MOELoraLayer.__init__(self, expert_num=kwargs.pop("expert_num", 2), base_layer=base_layer)
+        DMOLELayer.__init__(self, expert_num=kwargs.pop("expert_num", 2), base_layer=base_layer)
         init_lora_weights = kwargs.pop("init_lora_weights", True)
         self.task_num = kwargs.pop("task_num", True)
         self.te_dim = kwargs.pop("task_embedding_dim", True)
@@ -88,6 +87,8 @@ class MOELoraLinear(nn.Module, MOELoraLayer):
     def forward(self, x: torch.Tensor, *args, **kwargs):
         self._check_forward_args(x, *args, **kwargs)
         adapter_names = kwargs.pop("adapter_names", None)
+        task_ids = kwargs.pop("task_ids", None)
+        print(task_ids)
         # task_id = kwargs.pop(
         #     "task_id", torch.tensor([0] * len(x), dtype=torch.long).to(x.device)
         # )
@@ -223,7 +224,7 @@ class Gate(nn.Module):
 def dispatch_default(
     target: torch.nn.Module,
     adapter_name: str,
-    lora_config: MOELoraConfig,
+    lora_config: DMOLEConfig,
     **kwargs,
 ) -> Optional[torch.nn.Module]:
     new_module = None
@@ -233,6 +234,17 @@ def dispatch_default(
     else:
         target_base_layer = target
 
+    # if isinstance(target_base_layer, torch.nn.Embedding):
+    #     embedding_kwargs = kwargs.copy()
+    #     embedding_kwargs.pop("fan_in_fan_out", None)
+    #     embedding_kwargs.update(lora_config.loftq_config)
+    #     new_module = Embedding(target, adapter_name, **embedding_kwargs)
+    # elif isinstance(target_base_layer, torch.nn.Conv2d):
+    #     kwargs.update(lora_config.loftq_config)
+    #     new_module = Conv2d(target, adapter_name, **kwargs)
+    # elif isinstance(target_base_layer, torch.nn.Conv3d):
+    #     kwargs.update(lora_config.loftq_config)
+    #     new_module = Conv3d(target, adapter_name, **kwargs)
     if isinstance(target_base_layer, torch.nn.Linear):
         if kwargs["fan_in_fan_out"]:
             warnings.warn(
@@ -241,7 +253,7 @@ def dispatch_default(
             )
             kwargs["fan_in_fan_out"] = lora_config.fan_in_fan_out = False
         kwargs.update(lora_config.loftq_config)
-        new_module = MOELoraLinear(target_base_layer, adapter_name, **kwargs)
+        new_module = DMOLELinear(target_base_layer, adapter_name, **kwargs)
     # elif isinstance(target_base_layer, Conv1D):
     #     if not kwargs["fan_in_fan_out"]:
     #         warnings.warn(

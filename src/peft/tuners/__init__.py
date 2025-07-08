@@ -48,6 +48,7 @@ from .mmoelora import MMOELoraConfig, MMOELoraModel
 from .vera import VeraConfig, VeraModel
 from .xlora import XLoraConfig, XLoraModel
 from .moelora import MOELoraConfig, MOELoraModel
+from .d_mole import DMOLEConfig, DMOLEModel
 
 
 __all__ = [
