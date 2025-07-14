@@ -11,6 +11,7 @@ class DMOLEConfig(LoraConfig):
     """
 
     expert_num: int = field(default=4)
+    max_task_num: int = field(default=10)
 
     def __post_init__(self):
         super().__post_init__()

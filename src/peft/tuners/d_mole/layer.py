@@ -1,5 +1,5 @@
 import warnings
-from typing import Optional
+from typing import Mapping, Optional
 
 import torch
 from torch import nn
@@ -11,6 +11,25 @@ from .config import DMOLEConfig
 
 
 class DMOLELayer(LoraLayer):
+    adapter_layer_names: tuple[str, ...] = (
+        "lora_A",
+        "lora_B",
+        "lora_embedding_A",
+        "lora_embedding_B",
+        "lora_C",
+        "lora_D",
+        "lora_CD_gate",
+    )
+
+    other_param_names: tuple[str, ...] = (
+        "r",
+        "lora_alpha",
+        "scaling",
+        "lora_dropout",
+        "lora_gate",
+        "lora_taskid_to_loraid",
+        "lora_taskid_list",
+    )
 
     def __init__(
         self,
@@ -21,6 +40,8 @@ class DMOLELayer(LoraLayer):
 
         self.expert_num = expert_num
         self.lora_gate = nn.ModuleDict({})
+        self.lora_taskid_to_loraid = {}
+        self.lora_taskid_list = []
 
     def update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights, **kwargs):
         self.r[adapter_name] = r
@@ -40,6 +61,24 @@ class DMOLELayer(LoraLayer):
             self.reset_lora_parameters(adapter_name)
         self.lora_gate.update({adapter_name: Gate(self.in_features, self.expert_num)})
 
+        self.lora_C = nn.ModuleDict(
+            {
+                adapter_name: nn.ModuleList(
+                    [Expert(self.in_features, self.r[adapter_name]) for _ in range(self.task_num)]
+                )
+            }
+        )
+        self.lora_D = nn.ModuleDict(
+            {
+                adapter_name: nn.ModuleList(
+                    [Expert(self.r[adapter_name], self.out_features) for _ in range(self.task_num)]
+                )
+            }
+        )
+        self.lora_CD_gate = nn.ModuleDict(
+            {adapter_name: nn.ModuleList([Gate(self.in_features, 1) for _ in range(self.task_num)])}
+        )
+
         self._move_adapter_to_device_of_base_layer(adapter_name)
 
         self.set_adapter(self.active_adapters)
@@ -48,8 +87,79 @@ class DMOLELayer(LoraLayer):
         if adapter_name in self.lora_A.keys():
             # initialize A the same way as the default for nn.Linear and B to zero
             for i in range(self.expert_num):
-                nn.init.normal_(self.lora_A[adapter_name].loraA[i].mlp.weight, mean=0.0, std=0.01)
+                nn.init.kaiming_uniform_(self.lora_A[adapter_name].loraA[i].mlp.weight, a=5**0.5)
                 nn.init.zeros_(self.lora_B[adapter_name].loraB[i].mlp.weight)
+
+
+class DMOLE_AE_router(nn.Module):
+    def __init__(self, input_size: int, max_task_num: int, hidden_size: int = 20):
+        super().__init__()
+        self.encoder = nn.ModuleList([nn.Linear(input_size, hidden_size) for _ in range(max_task_num)])
+        self.decorder = nn.ModuleList([nn.Linear(hidden_size, input_size) for _ in range(max_task_num)])
+        self.taskid_to_expertid = {}
+        self.taskid_list = []
+
+    def forward(self, x: torch.Tensor, task_ids: Optional[torch.LongTensor] = None) -> torch.Tensor:
+        # 输入task_ids说明处于训练阶段
+        if task_ids is not None:
+            task_id = int(task_ids[0].cpu().item())
+            if self.taskid_to_expertid.get(task_id) is None:
+                self.taskid_list.append(task_id)
+                self.taskid_to_expertid[task_id] = len(self.taskid_list) - 1
+
+            # x是一个batch，对batch中的每个sample求重建损失，之后求平均作为loss
+            previous_dtype = x.dtype
+            x = x.to(self.encoder[0].weight.dtype)
+
+            x_rec = self.decorder[self.taskid_to_expertid[task_id]](self.encoder[self.taskid_to_expertid[task_id]](x))
+            x_rec = x_rec.to(previous_dtype)
+
+            loss = torch.mean((x - x_rec) ** 2)
+            return loss
+        else:
+            # 批次操作，对于每个sample，求其对应的重建损失，然后选择loss最小的task作为对应sample的id
+            if len(self.taskid_list) == 0:
+                raise ValueError("No task ids provided for inference. Please provide task ids during training.")
+            if len(self.taskid_to_expertid) == 0:
+                raise ValueError("No task ids provided for inference. Please provide task ids during training.")
+
+            sample_loss_dist = torch.zeros(x.size(0), len(self.taskid_list), device=x.device)
+            for i in range(len(self.taskid_list)):
+                task_id = self.taskid_list[i]
+                if self.taskid_to_expertid.get(task_id) is None:
+                    raise ValueError(f"Task ID {task_id} not found in taskid_to_expertid mapping.")
+
+                previous_dtype = x.dtype
+                x = x.to(self.encoder[0].weight.dtype)  # Ensure input is in
+
+                x_rec = self.decorder[self.taskid_to_expertid[task_id]](
+                    self.encoder[self.taskid_to_expertid[task_id]](x)
+                )
+
+                x_rec = x_rec.to(previous_dtype)
+
+                sample_loss = torch.mean((x - x_rec) ** 2, dim=1)
+                sample_loss_dist[:, i] = sample_loss
+
+            # 对于每个sample，选择loss最小的task作为对应sample的id
+            min_loss, min_loss_indices = torch.min(sample_loss_dist, dim=1)
+            task_ids = torch.LongTensor([self.taskid_list[i] for i in min_loss_indices]).to(x.device)
+            self.latest_task_ids = task_ids
+
+            return task_ids
+
+    def get_extra_state(self):
+        return {
+            "taskid_to_expertid": self.taskid_to_expertid,
+            "taskid_list": self.taskid_list,
+        }
+
+    def set_extra_state(self, state):
+        self.taskid_to_expertid = state.get("taskid_to_expertid", {})
+        self.taskid_list = state.get("taskid_list", [])
+
+    def get_latest_task_ids(self):
+        return self.latest_task_ids
 
 
 class DMOLELinear(nn.Module, DMOLELayer):
@@ -68,14 +178,8 @@ class DMOLELinear(nn.Module, DMOLELayer):
         super().__init__()
         DMOLELayer.__init__(self, expert_num=kwargs.pop("expert_num", 2), base_layer=base_layer)
         init_lora_weights = kwargs.pop("init_lora_weights", True)
-        self.task_num = kwargs.pop("task_num", True)
+        self.task_num = kwargs.pop("max_task_num", True)
         self.te_dim = kwargs.pop("task_embedding_dim", True)
-
-        # nn.Linear.__init__(self, in_features, out_features, **kwargs)
-
-        # init the Gate network
-        # self.lora_task_embedding = nn.ModuleDict({})
-        # self.lora_task_embedding.update(nn.ModuleDict({adapter_name: nn.Embedding(self.task_num + 1, self.te_dim)}))
 
         # Freezing the pre-trained weight matrix
 
@@ -88,17 +192,16 @@ class DMOLELinear(nn.Module, DMOLELayer):
         self._check_forward_args(x, *args, **kwargs)
         adapter_names = kwargs.pop("adapter_names", None)
         task_ids = kwargs.pop("task_ids", None)
-        print(task_ids)
-        # task_id = kwargs.pop(
-        #     "task_id", torch.tensor([0] * len(x), dtype=torch.long).to(x.device)
-        # )
+        if task_ids is not None:
+            for task_id in task_ids:
+                task_id = int(task_id.cpu().item())
+                if self.lora_taskid_to_loraid.get(task_id) is None:
+                    self.lora_taskid_list.append(task_id)
+                    self.lora_taskid_to_loraid[task_id] = len(self.lora_taskid_list) - 1
+
         previous_dtype = x.dtype
 
         if self.disable_adapters:  # No adapter
-            # if self.merged:
-            #     self.unmerge(task_id)
-            # result = self.base_layer(x, *args, **kwargs)
-            # TODO: check this
             result = self.base_layer(x, *args, **kwargs)
         elif self.merged:  # general lora process
             result = self.base_layer(x, *args, **kwargs)
@@ -110,19 +213,13 @@ class DMOLELinear(nn.Module, DMOLELayer):
                 if active_adapter not in self.lora_A.keys():
                     continue
                 scaling = self.scaling[active_adapter]
-                lora_B = self.lora_B[active_adapter]
-                lora_A = self.lora_A[active_adapter]
-                dropout = self.lora_dropout[active_adapter]
-                lora_gate = self.lora_gate[active_adapter]
-
-                x = self._cast_input_dtype(x, lora_A.loraA[0].mlp.weight.dtype)
-
-                expert_weight = lora_gate(x)
-
-                for i in range(self.expert_num):
+                for i in range(len(self.lora_taskid_list)):
                     result += (
-                        scaling * lora_B.loraB[i](lora_A.loraA[i](dropout(x))) * expert_weight[..., i].unsqueeze(-1)
+                        self.lora_CD_gate[active_adapter][i](x)
+                        * scaling
+                        * self.lora_D[active_adapter][i](self.lora_C[active_adapter][i](x))
                     )
+
             result = result.to(torch_result_dtype)
 
         result = result.to(previous_dtype)
@@ -130,7 +227,7 @@ class DMOLELinear(nn.Module, DMOLELayer):
         return result
 
     def __repr__(self):
-        return "MOElora." + super().__repr__()
+        return "DMOLE." + super().__repr__()
 
 
 class MOELinearA(nn.Module):
