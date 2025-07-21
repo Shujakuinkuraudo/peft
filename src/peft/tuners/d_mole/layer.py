@@ -101,6 +101,7 @@ class DMOLE_AE_router(nn.Module):
 
     def forward(self, x: torch.Tensor, task_ids: Optional[torch.LongTensor] = None) -> torch.Tensor:
         # 输入task_ids说明处于训练阶段
+        loss = None
         if task_ids is not None:
             task_id = int(task_ids[0].cpu().item())
             if self.taskid_to_expertid.get(task_id) is None:
@@ -115,38 +116,48 @@ class DMOLE_AE_router(nn.Module):
             x_rec = x_rec.to(previous_dtype)
 
             loss = torch.mean((x - x_rec) ** 2)
-            return loss
-        else:
-            # 批次操作，对于每个sample，求其对应的重建损失，然后选择loss最小的task作为对应sample的id
-            if len(self.taskid_list) == 0:
-                raise ValueError("No task ids provided for inference. Please provide task ids during training.")
-            if len(self.taskid_to_expertid) == 0:
-                raise ValueError("No task ids provided for inference. Please provide task ids during training.")
 
-            sample_loss_dist = torch.zeros(x.size(0), len(self.taskid_list), device=x.device)
-            for i in range(len(self.taskid_list)):
-                task_id = self.taskid_list[i]
-                if self.taskid_to_expertid.get(task_id) is None:
-                    raise ValueError(f"Task ID {task_id} not found in taskid_to_expertid mapping.")
+        # 批次操作，对于每个sample，求其对应的重建损失，然后选择loss最小的task作为对应sample的id
+        if len(self.taskid_list) == 0:
+            raise ValueError("No task ids provided for inference. Please provide task ids during training.")
+        if len(self.taskid_to_expertid) == 0:
+            raise ValueError("No task ids provided for inference. Please provide task ids during training.")
 
-                previous_dtype = x.dtype
-                x = x.to(self.encoder[0].weight.dtype)  # Ensure input is in
+        sample_loss_dist = torch.zeros(x.size(0), len(self.taskid_list), device=x.device)
+        for i in range(len(self.taskid_list)):
+            task_id = self.taskid_list[i]
+            if self.taskid_to_expertid.get(task_id) is None:
+                raise ValueError(f"Task ID {task_id} not found in taskid_to_expertid mapping.")
 
-                x_rec = self.decorder[self.taskid_to_expertid[task_id]](
-                    self.encoder[self.taskid_to_expertid[task_id]](x)
-                )
+            previous_dtype = x.dtype
+            x = x.to(self.encoder[0].weight.dtype)  # Ensure input is in
 
-                x_rec = x_rec.to(previous_dtype)
+            x_rec = self.decorder[self.taskid_to_expertid[task_id]](self.encoder[self.taskid_to_expertid[task_id]](x))
 
-                sample_loss = torch.mean((x - x_rec) ** 2, dim=1)
-                sample_loss_dist[:, i] = sample_loss
+            x_rec = x_rec.to(previous_dtype)
 
-            # 对于每个sample，选择loss最小的task作为对应sample的id
-            min_loss, min_loss_indices = torch.min(sample_loss_dist, dim=1)
-            task_ids = torch.LongTensor([self.taskid_list[i] for i in min_loss_indices]).to(x.device)
-            self.latest_task_ids = task_ids
+            sample_loss = torch.mean((x - x_rec) ** 2, dim=1)
+            sample_loss_dist[:, i] = sample_loss
 
-            return task_ids
+        sorted_losses, sorted_indices = torch.sort(sample_loss_dist, dim=1)
+        # print(sorted_indices, flush=True)
+        # tensor([[0, 1], [1, 0]])
+        sorted_sample_task_ids = []
+        for sample in range(sorted_indices.size(0)):
+            sorted_task_ids = sorted_indices[sample, :].cpu().tolist()
+            sorted_task_ids = [self.taskid_list[task_id] for task_id in sorted_task_ids]
+            if task_ids is not None:
+                sorted_task_ids.remove(task_ids[sample].cpu().item())
+                sorted_task_ids.insert(0, task_ids[sample].cpu().item())
+            sorted_sample_task_ids.append(sorted_task_ids)
+
+        sorted_sample_task_ids = torch.LongTensor(sorted_sample_task_ids).to(x.device)
+
+        self.latest_task_ids = sorted_sample_task_ids
+
+        print("sorted_sample_task_ids", sorted_sample_task_ids, flush=True)
+
+        return sorted_sample_task_ids, loss
 
     def get_extra_state(self):
         return {
@@ -188,16 +199,21 @@ class DMOLELinear(nn.Module, DMOLELayer):
         self.update_layer(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights)
         self._active_adapter = adapter_name
 
+        self.activate = False
+
     def forward(self, x: torch.Tensor, *args, **kwargs):
         self._check_forward_args(x, *args, **kwargs)
         adapter_names = kwargs.pop("adapter_names", None)
         task_ids = kwargs.pop("task_ids", None)
         if task_ids is not None:
-            for task_id in task_ids:
-                task_id = int(task_id.cpu().item())
-                if self.lora_taskid_to_loraid.get(task_id) is None:
-                    self.lora_taskid_list.append(task_id)
-                    self.lora_taskid_to_loraid[task_id] = len(self.lora_taskid_list) - 1
+            for sample in range(task_ids.size(0)):
+                for task_id in task_ids[sample]:
+                    if self.activate:
+                        task_id = int(task_id.cpu().item())
+                        if self.lora_taskid_to_loraid.get(task_id) is None:
+                            self.lora_taskid_list.append(task_id)
+                            self.lora_taskid_to_loraid[task_id] = len(self.lora_taskid_list) - 1
+            self.activate = False
 
         previous_dtype = x.dtype
 
@@ -213,18 +229,37 @@ class DMOLELinear(nn.Module, DMOLELayer):
                 if active_adapter not in self.lora_A.keys():
                     continue
                 scaling = self.scaling[active_adapter]
-                for i in range(len(self.lora_taskid_list)):
-                    result += (
-                        self.lora_CD_gate[active_adapter][i](x)
-                        * scaling
-                        * self.lora_D[active_adapter][i](self.lora_C[active_adapter][i](x))
-                    )
+                if task_ids is not None:
+                    for sample in range(x.size(0)):
+                        count = 0
+                        lora_result = torch.zeros_like(result[sample], dtype=torch_result_dtype)
+                        for task_id in task_ids[sample]:
+                            if count >= 2:
+                                break
+                            if task_id in self.lora_taskid_to_loraid:
+                                lora_id = self.lora_taskid_to_loraid[task_id]
+                                print(sample, task_id, lora_id, flush=True)
+                                lora_result += (
+                                    self.lora_CD_gate[active_adapter][lora_id](x[sample])
+                                    * scaling
+                                    * self.lora_D[active_adapter][lora_id](
+                                        self.lora_C[active_adapter][lora_id](x[sample])
+                                    )
+                                )
+                                print(lora_result)
+                                count += 1
+                        if count > 0:
+                            result[sample] += lora_result / count
 
             result = result.to(torch_result_dtype)
 
         result = result.to(previous_dtype)
 
         return result
+
+    def add_new(self, name):
+        self.activate = True
+        print(name, "added to DMOLELayer")
 
     def __repr__(self):
         return "DMOLE." + super().__repr__()
