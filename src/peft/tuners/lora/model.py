@@ -235,8 +235,10 @@ class LoraModel(BaseTuner):
             )
         else:
             device_map = self.model.hf_device_map if hasattr(self.model, "hf_device_map") else None
-            try: 
-                new_module = self._create_new_module(lora_config, adapter_name, target, device_map=device_map, **kwargs)
+            try:
+                new_module = self._create_new_module(
+                    lora_config, adapter_name, target, device_map=device_map, **kwargs
+                )
                 if adapter_name not in self.active_adapters:
                     # adding an additional adapter: it is not automatically trainable
                     new_module.requires_grad_(False)

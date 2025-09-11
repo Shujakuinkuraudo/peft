@@ -10,7 +10,9 @@ class HiDeLLaVALoraConfig(LoraConfig):
     This is the configuration class to store the configuration of a [`~peft.HiDeLLaVALoraConfig`]
     """
 
+    task_embedding_dim: int = field(default=64)
     expert_num: int = field(default=4)
+    cur_task: int = field(default=4)
 
     def __post_init__(self):
         super().__post_init__()

@@ -1073,10 +1073,12 @@ def _maybe_include_all_linear_layers(peft_config: PeftConfig, model: nn.Module) 
     ):
         return peft_config
 
-    linear_classes = (torch.nn.Linear, Conv1D)
+    linear_classes = (torch.nn.Linear)
     linear_names = ("Linear",)
     linear_module_names = set()
     for name, module in model.named_modules():
+        if "lm_head" in name or "output_layer" in name:
+            continue
         # match with all linear classes.
         if isinstance(module, linear_classes):
             linear_module_names.add(name)
