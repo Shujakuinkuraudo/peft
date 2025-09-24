@@ -26,6 +26,7 @@ from peft import (
     IA3Config,
     LoraConfig,
     PromptLearningConfig,
+    ShiraConfig,
     VBLoRAConfig,
 )
 from peft.import_utils import (
@@ -78,7 +79,7 @@ def require_torch_multi_gpu(test_case):
         return test_case
 
 
-def require_multi_accelerator(test_case):
+def require_torch_multi_accelerator(test_case):
     """
     Decorator marking a test that requires multiple hardware accelerators. These tests are skipped on a machine without
     multiple accelerators.
@@ -227,6 +228,8 @@ def set_init_weights_false(config_cls, kwargs):
     kwargs = kwargs.copy()
 
     if issubclass(config_cls, PromptLearningConfig):
+        return kwargs
+    if issubclass(config_cls, ShiraConfig):
         return kwargs
     if config_cls == VBLoRAConfig:
         return kwargs

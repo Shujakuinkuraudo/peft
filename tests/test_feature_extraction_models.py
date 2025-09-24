@@ -19,15 +19,18 @@ from peft import (
     AdaLoraConfig,
     BOFTConfig,
     BoneConfig,
+    C3AConfig,
     FourierFTConfig,
     HRAConfig,
     IA3Config,
     LoraConfig,
+    MissConfig,
     OFTConfig,
     PrefixTuningConfig,
     PromptEncoderConfig,
     PromptLearningConfig,
     PromptTuningConfig,
+    ShiraConfig,
     VBLoRAConfig,
     VeraConfig,
 )
@@ -62,6 +65,14 @@ ALL_CONFIGS = [
     ),
     (
         BoneConfig,
+        {
+            "task_type": "FEATURE_EXTRACTION",
+            "target_modules": None,
+            "r": 2,
+        },
+    ),
+    (
+        MissConfig,
         {
             "task_type": "FEATURE_EXTRACTION",
             "target_modules": None,
@@ -145,6 +156,15 @@ ALL_CONFIGS = [
         },
     ),
     (
+        ShiraConfig,
+        {
+            "r": 1,
+            "task_type": "FEATURE_EXTRACTION",
+            "target_modules": None,
+            "init_weights": False,
+        },
+    ),
+    (
         VBLoRAConfig,
         {
             "task_type": "FEATURE_EXTRACTION",
@@ -165,6 +185,14 @@ ALL_CONFIGS = [
             "d_initial": 0.1,
             "save_projection": True,
             "bias": "none",
+        },
+    ),
+    (
+        C3AConfig,
+        {
+            "task_type": "FEATURE_EXTRACTION",
+            "block_size": 1,
+            "target_modules": None,
         },
     ),
 ]

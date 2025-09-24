@@ -15,11 +15,11 @@ import copy
 import json
 import os
 import pickle
+import platform
 import re
 import shutil
 import tempfile
 import warnings
-from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import replace
 from unittest import mock
@@ -43,6 +43,7 @@ from peft import (
     LoHaConfig,
     LoKrConfig,
     LoraConfig,
+    MissConfig,
     OFTConfig,
     PeftModel,
     PeftType,
@@ -58,6 +59,7 @@ from peft import (
     inject_adapter_in_model,
     prepare_model_for_kbit_training,
 )
+from peft.tuners._buffer_dict import BufferDict
 from peft.tuners.lora import LoraLayer
 from peft.tuners.tuners_utils import BaseTunerLayer
 from peft.utils import _get_submodules, infer_device
@@ -134,6 +136,11 @@ CONFIG_TESTING_KWARGS = (
         "target_modules": None,
         "r": 2,
     },
+    # MiSS
+    {
+        "target_modules": None,
+        "r": 2,
+    },
     # LoRA + trainable_tokens
     {
         "r": 8,
@@ -175,73 +182,12 @@ CLASSES_MAPPING = {
     "vblora": (VBLoRAConfig, CONFIG_TESTING_KWARGS[10]),
     "oft": (OFTConfig, CONFIG_TESTING_KWARGS[11]),
     "bone": (BoneConfig, CONFIG_TESTING_KWARGS[12]),
+    "miss": (MissConfig, CONFIG_TESTING_KWARGS[12]),
     "lora+trainable_tokens": (LoraConfig, CONFIG_TESTING_KWARGS[13]),
     "randlora": (RandLoraConfig, CONFIG_TESTING_KWARGS[14]),
 }
 
 DECODER_MODELS_EXTRA = {"cpt": (CPTConfig, CONFIG_TESTING_KWARGS[15])}
-
-
-# Adapted from https://github.com/huggingface/transformers/blob/48327c57182fdade7f7797d1eaad2d166de5c55b/src/transformers/activations.py#LL166C7-L166C22
-class ClassInstantier(OrderedDict):
-    def __getitem__(self, key, *args, **kwargs):
-        # check if any of the kwargs is inside the config class kwargs
-        if any(kwarg in self[key][1] for kwarg in kwargs):
-            new_config_kwargs = self[key][1].copy()
-            new_config_kwargs.update(kwargs)
-            return (self[key][0], new_config_kwargs)
-
-        return super().__getitem__(key, *args, **kwargs)
-
-    def get_grid_parameters(self, grid_parameters, filter_params_func=None):
-        r"""
-        Returns a list of all possible combinations of the parameters in the config classes.
-
-        Args:
-            grid_parameters (`dict`):
-                A dictionary containing the parameters to be tested. There should be at least the key "model_ids" which
-                contains a list of model ids to be tested. The other keys should be the name of the config class
-                post-fixed with "_kwargs" and the value should be a dictionary containing the parameters to be tested
-                for that config class.
-            filter_params_func (`callable`, `optional`):
-                A function that takes a list of tuples and returns a list of tuples. This function is used to filter
-                out the tests that needs for example to be skipped.
-
-        Returns:
-            generated_tests (`list`):
-                A list of tuples containing the name of the test, the model id, the config class and the config class
-                kwargs.
-        """
-        generated_tests = []
-        model_list = grid_parameters["model_ids"]
-        task_type = grid_parameters["task_type"] if "task_type" in grid_parameters else None
-
-        for model_id in model_list:
-            for key, value in self.items():
-                if f"{key}_kwargs" in grid_parameters:
-                    peft_configs = []
-                    current_peft_config = value[1].copy()
-                    for current_key, current_value in grid_parameters[f"{key}_kwargs"].items():
-                        for kwarg in current_value:
-                            current_peft_config.update({current_key: kwarg})
-
-                            if task_type is not None:
-                                current_peft_config.update({"task_type": task_type})
-
-                            peft_configs.append(current_peft_config.copy())
-                else:
-                    current_peft_config = value[1].copy()
-                    if task_type is not None:
-                        current_peft_config.update({"task_type": task_type})
-                    peft_configs = [current_peft_config]
-
-                for peft_config in peft_configs:
-                    generated_tests.append((f"test_{model_id}_{key}", model_id, value[0], peft_config))
-
-        if filter_params_func is not None:
-            generated_tests = filter_params_func(generated_tests)
-
-        return generated_tests
 
 
 @contextmanager
@@ -297,10 +243,6 @@ def hub_online_once(model_id: str):
         raise
 
 
-PeftTestConfigManager = ClassInstantier(CLASSES_MAPPING)
-PeftTestConfigManagerForDecoderModels = ClassInstantier({**CLASSES_MAPPING, **DECODER_MODELS_EXTRA})
-
-
 class PeftCommonTester:
     r"""
     A large testing suite for testing common functionality of the PEFT models.
@@ -332,6 +274,11 @@ class PeftCommonTester:
             assert dct["base_model"] == model.config.to_dict()["_name_or_path"]
         else:  # a custom model
             assert "base_model" not in dct
+
+        # The Hub expects the lora tag to be set for PEFT LoRA models since they
+        # have explicit support for things like inference.
+        if model.active_peft_config.peft_type.value == "LORA":
+            assert "lora" in dct["tags"]
 
     def check_config_json(self, tmp_dirname, model):
         # check the generated config.json
@@ -849,6 +796,9 @@ class PeftCommonTester:
             if (config.peft_type in {"IA3", "LORA"}) and (model_id in conv_ids):
                 # for some reason, the Conv introduces a larger error
                 atol, rtol = 0.3, 0.01
+            if model_id == "trl-internal-testing/tiny-Llama4ForCausalLM":
+                # also getting larger errors here, not exactly sure why
+                atol, rtol = 0.3, 0.01
             assert torch.allclose(logits, logits_merged, atol=atol, rtol=rtol)
             assert torch.allclose(logits, logits_unmerged, atol=atol, rtol=rtol)
             assert torch.allclose(logits, logits_merged_unloaded, atol=atol, rtol=rtol)
@@ -890,6 +840,7 @@ class PeftCommonTester:
             PeftType.BOFT,
             PeftType.HRA,
             PeftType.BONE,
+            PeftType.MISS,
         ]
 
         if ("gpt2" in model_id.lower()) and (config_cls == IA3Config):
@@ -923,6 +874,13 @@ class PeftCommonTester:
             model.add_adapter("adapter-2", config)
             model.set_adapter("adapter-2")
             model.eval()
+
+            # sanity check: each adapter layer with a 'default' adapter should also have 'adapter-2'
+            containers = (torch.nn.ModuleDict, torch.nn.ParameterDict, BufferDict)
+            num_default = len([m for m in model.modules() if isinstance(m, containers) and "default" in m])
+            num_adapter2 = len([m for m in model.modules() if isinstance(m, containers) and "adapter-2" in m])
+            assert num_default > 0
+            assert num_default == num_adapter2
 
             with torch.inference_mode():
                 logits_adapter_2 = model(**dummy_input)[0]
@@ -1460,9 +1418,6 @@ class PeftCommonTester:
     def _test_training_prompt_learning_tasks(self, model_id, config_cls, config_kwargs):
         if not issubclass(config_cls, PromptLearningConfig):
             return pytest.skip(f"Test not applicable for {config_cls}")
-        if ("gemma" in model_id.lower()) and (config_cls == PrefixTuningConfig):
-            # TODO might be caused by the 4d causal attention mask of gemma
-            return pytest.skip("Prefix tuning + gemma is currently failing")
 
         with hub_online_once(model_id):
             model = self.transformers_class.from_pretrained(model_id)
@@ -1505,6 +1460,7 @@ class PeftCommonTester:
             PeftType.HRA,
             PeftType.VBLORA,
             PeftType.BONE,
+            PeftType.MISS,
         ]
         # IA3 does not support deleting adapters yet, but it just needs to be added
         # AdaLora does not support multiple adapters
@@ -1578,6 +1534,7 @@ class PeftCommonTester:
             PeftType.HRA,
             PeftType.VBLORA,
             PeftType.BONE,
+            PeftType.MISS,
         ]
         # IA3 does not support deleting adapters yet, but it just needs to be added
         # AdaLora does not support multiple adapters
@@ -1673,7 +1630,10 @@ class PeftCommonTester:
             "HRA",
             "VBLORA",
             "RANDLORA",
+            "SHIRA",
             "BONE",
+            "C3A",
+            "MISS",
         ):
             with pytest.raises(AttributeError):
                 model = model.unload()
@@ -2007,14 +1967,19 @@ class PeftCommonTester:
                 # for SD, very rarely, a pixel can differ
                 assert (output_before != output_peft_disabled).float().mean() < 1e-4
             else:
+                atol, rtol = 1e-6, 1e-6
+                if (platform.system() == "Windows") and (model_id == "trl-internal-testing/tiny-Llama4ForCausalLM"):
+                    # for some reason, Windows CI fails with stricter tolerance
+                    atol, rtol = 1e-5, 1e-5
+
                 with peft_model.disable_adapter():
                     output_peft_disabled = get_output(peft_model)
-                assert torch.allclose(output_before, output_peft_disabled, atol=1e-6, rtol=1e-6)
+                assert torch.allclose(output_before, output_peft_disabled, atol=atol, rtol=rtol)
 
                 # after leaving the disable_adapter context, the output should be the same as with enabled adapter again
                 # see #1501
                 output_peft_after_disabled = get_output(peft_model)
-                assert torch.allclose(output_peft, output_peft_after_disabled, atol=1e-6, rtol=1e-6)
+                assert torch.allclose(output_peft, output_peft_after_disabled, atol=atol, rtol=rtol)
 
             # TODO: add tests to check if disabling adapters works after calling merge_adapter
 

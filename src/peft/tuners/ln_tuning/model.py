@@ -31,7 +31,7 @@ class LNTuningModel(BaseTuner):
     """
     Creates LayerNorm tuning from a pretrained transformer model.
 
-    The method is described in detail in https://arxiv.org/abs/2312.11420.
+    The method is described in detail in https://huggingface.co/papers/2312.11420.
 
     Args:
         model ([`torch.nn.Module`]): The model to be adapted.
@@ -64,10 +64,6 @@ class LNTuningModel(BaseTuner):
     """
 
     prefix: str = "ln_tuning_"
-
-    def __init__(self, model, config, adapter_name, low_cpu_mem_usage: bool = False) -> None:
-        # self.adapter_name = adapter_name
-        super().__init__(model, config, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage)
 
     def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped module."""
